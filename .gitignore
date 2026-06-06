@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+*.cache
+.baidu_finance_cache/
+
+# OpenSpec (local spec-driven workflow, not published)
+openspec/
+.github/
