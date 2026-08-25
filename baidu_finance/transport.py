@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from typing import Optional, Protocol, Tuple, Union, runtime_checkable
 
 import requests
@@ -32,7 +33,8 @@ class Transport(Protocol):
 class RequestsTransport:
     """Default transport: a pooled ``requests`` session with a wget fallback.
 
-    The session is created lazily on first use and released by :meth:`close`.
+    Each calling thread gets its own session (``requests.Session`` is not
+    thread-safe). Sessions are created lazily and released by :meth:`close`.
     On a failed request the transport retries via a ``wget`` subprocess before
     giving up, mirroring the resilience of the original implementation.
     """
@@ -49,25 +51,44 @@ class RequestsTransport:
         self._retries = retries
         self._pool_connections = pool_connections
         self._pool_maxsize = pool_maxsize
-        self._session: Optional[requests.Session] = None
+        self._local = threading.local()
+        self._sessions: list[requests.Session] = []
+        self._lock = threading.Lock()
+
+    @property
+    def _session(self) -> Optional[requests.Session]:
+        """The calling thread's session, or ``None`` if it has not been used."""
+        return getattr(self._local, "session", None)
+
+    def _make_session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update(_DEFAULT_HEADERS)
+        adapter = HTTPAdapter(
+            pool_connections=self._pool_connections,
+            pool_maxsize=self._pool_maxsize,
+            max_retries=Retry(
+                total=self._retries,
+                backoff_factor=0.3,
+                status_forcelist=(500, 502, 503, 504),
+            ),
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
 
     def _get_session(self) -> requests.Session:
-        if self._session is None:
-            session = requests.Session()
-            session.headers.update(_DEFAULT_HEADERS)
-            adapter = HTTPAdapter(
-                pool_connections=self._pool_connections,
-                pool_maxsize=self._pool_maxsize,
-                max_retries=Retry(
-                    total=self._retries,
-                    backoff_factor=0.3,
-                    status_forcelist=(500, 502, 503, 504),
-                ),
-            )
-            session.mount("http://", adapter)
-            session.mount("https://", adapter)
-            self._session = session
-        return self._session
+        session = getattr(self._local, "session", None)
+        if session is not None:
+            with self._lock:
+                live = session in self._sessions
+            if not live:
+                session = None
+        if session is None:
+            session = self._make_session()
+            self._local.session = session
+            with self._lock:
+                self._sessions.append(session)
+        return session
 
     def get_json(self, url: str) -> JSON:
         try:
@@ -89,12 +110,16 @@ class RequestsTransport:
             raise TransportError(f"Failed to fetch {url!r}: {exc}") from exc
 
     def close(self) -> None:
-        """Release the underlying session."""
-        if self._session is not None:
+        """Release every thread's session."""
+        with self._lock:
+            sessions = self._sessions
+            self._sessions = []
+        for session in sessions:
             try:
-                self._session.close()
-            finally:
-                self._session = None
+                session.close()
+            except Exception:
+                pass
+        self._local.session = None
 
 
 class TransportError(RuntimeError):

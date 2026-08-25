@@ -18,8 +18,9 @@ from .transport import RequestsTransport, Transport
 class Client:
     """Baidu market-data client.
 
-    Stocks are addressed by public code; industries, concepts, and HK sectors
-    are addressed by public name. Baidu internal ids never appear in returns.
+    Stocks are addressed by public code; industries, concepts, HK sectors,
+    and US sectors are addressed by public name. Baidu internal ids never
+    appear in returns.
 
     Args:
         transport: Transport implementation. Defaults to :class:`RequestsTransport`.
@@ -103,6 +104,25 @@ class Client:
     ) -> pd.DataFrame:
         """HK Stock-Connect constituents as ``[code, name, sector_code, sector_name]``."""
         return self._sector.hk_stock_connect(connect_type, page, page_size)
+
+    # ── united states ────────────────────────────────────────────────────
+    def list_us_sectors(self) -> pd.DataFrame:
+        """List US sectors as ``[name, ratio]``."""
+        return self._sector.list_us_sectors()
+
+    def us_sector_constituents(self, name: str) -> pd.DataFrame:
+        """Member stocks of a US sector as ``[code, name, market_value]``."""
+        return self._sector.us_sector_constituents(name)
+
+    def us_sector_kline(
+        self, name: str, period: Union[Period, str], start: datetime, end: datetime
+    ) -> pd.DataFrame:
+        """OHLCV K-line for a US sector, by name."""
+        return self._sector.us_sector_kline(name, period, start, end)
+
+    def us_all_constituents(self) -> pd.DataFrame:
+        """All US sector members as ``[code, name, sector, market_value]``."""
+        return self._sector.us_all_constituents()
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def close(self) -> None:

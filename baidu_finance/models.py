@@ -9,6 +9,8 @@ KLINE_COLUMNS = ["open", "high", "low", "close", "volume"]
 SECTOR_COLUMNS = ["name", "ratio"]
 CONSTITUENT_COLUMNS = ["code", "name"]
 CONNECT_COLUMNS = ["code", "name", "sector_code", "sector_name"]
+US_CONSTITUENT_COLUMNS = ["code", "name", "market_value"]
+US_MEMBER_COLUMNS = ["code", "name", "sector", "market_value"]
 
 
 @dataclass(frozen=True)
