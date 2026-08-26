@@ -10,10 +10,11 @@ from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
+import pytest
 
 from baidu_finance import Period
 from baidu_finance.cache import MemoryCache
-from baidu_finance.sector import SectorAPI
+from baidu_finance.sector import SectorAPI, SectorNotFoundError
 import baidu_finance.sector as sector_mod
 
 from tests.markers import live
@@ -35,7 +36,7 @@ class _FakeTransport:
         return self.handler(url)
 
 
-class TestUsAllConstituentsUnit:
+class TestUsSectorsUnit:
     def test_constituents_paginate_by_offset(self, monkeypatch):
         monkeypatch.setattr(sector_mod, "_SAPI_PAGE", 2)
         pages = {
@@ -105,7 +106,7 @@ class TestUsAllConstituentsUnit:
                     {"name": "半导体", "code": "US1305", "market": "us", "pxChangeRate": "1%"},
                 ]}}}
             return {"Result": {"list": {"body": [
-                {"code": "UMC", "name": "联电", "rawData": {"marketValue": 47775658429}},
+                {"code": "UMC", "name": "联电", "rawData": {"marketValue": "47,775,658,429"}},
                 {"code": "MISS", "name": "无市值"},
             ]}}}
 
@@ -114,6 +115,140 @@ class TestUsAllConstituentsUnit:
         assert list(df.columns) == ["code", "name", "market_value"]
         assert df.loc[df["code"] == "UMC", "market_value"].iloc[0] == 47775658429
         assert pd.isna(df.loc[df["code"] == "MISS", "market_value"].iloc[0])
+
+    def test_us_sector_quotes_from_rawdata(self):
+        def handler(url):
+            return {"Result": {"list": {"body": [{
+                "name": "半导体", "code": "US1305", "market": "us",
+                "pxChangeRate": "-2.97%",
+                "rawData": {
+                    "lastPx": 4140.67, "pxChange": -126.96, "pxChangeRate": -2.97,
+                    "volume": 592746904, "amount": 109021037000,
+                    "marketValue": 15011965261382,
+                },
+            }]}}}
+
+        api = SectorAPI(_FakeTransport(handler), MemoryCache())
+        df = api.us_sector_quotes()
+        assert list(df.columns) == [
+            "name", "last", "change", "ratio", "volume", "amount", "market_value",
+        ]
+        assert df.iloc[0]["name"] == "半导体"
+        assert df.iloc[0]["last"] == 4140.67
+        assert df.iloc[0]["change"] == -126.96
+        assert df.iloc[0]["ratio"] == -2.97
+        assert df.iloc[0]["volume"] == 592746904
+        assert df.iloc[0]["amount"] == 109021037000
+        assert df.iloc[0]["market_value"] == 15011965261382
+        assert "real_code" not in df.columns
+        assert "US1305" not in set(df.iloc[0].astype(str))
+
+    def test_us_sector_quote_filters_heatmap(self):
+        transport = _FakeTransport(lambda url: {"Result": {"list": {"body": [{
+            "name": "半导体", "code": "US1305", "market": "us",
+            "rawData": {
+                "lastPx": 4140.67, "pxChange": -126.96, "pxChangeRate": -2.97,
+                "volume": 592746904, "amount": 109021037000,
+                "marketValue": 15011965261382,
+            },
+        }]}}})
+        api = SectorAPI(transport, MemoryCache())
+        df = api.us_sector_quote("半导体")
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert list(df.columns) == [
+            "name", "last", "change", "ratio", "volume", "amount", "market_value",
+        ]
+        assert row["name"] == "半导体"
+        assert row["last"] == 4140.67
+        assert row["change"] == -126.96
+        assert row["ratio"] == -2.97
+        assert row["volume"] == 592746904
+        assert row["amount"] == 109021037000
+        assert "US1305" not in set(df.astype(str).iloc[0])
+        assert all("getquotation" not in url for url in transport.urls)
+        assert all("quotation_block_minute" not in url for url in transport.urls)
+
+    def test_us_sector_quote_unknown_name(self):
+        api = SectorAPI(_FakeTransport(lambda url: {"Result": {"list": {"body": [
+            {"name": "半导体", "code": "US1305", "market": "us",
+             "rawData": {"lastPx": 1}},
+        ]}}}), MemoryCache())
+        with pytest.raises(SectorNotFoundError, match="不存在"):
+            api.us_sector_quote("不存在")
+
+    def test_us_sector_quote_missing_last_stays_nan(self):
+        api = SectorAPI(_FakeTransport(lambda url: {"Result": {"list": {"body": [
+            {"name": "半导体", "code": "US1305", "market": "us"},
+        ]}}}), MemoryCache())
+        df = api.us_sector_quote("半导体")
+        assert len(df) == 1
+        assert pd.isna(df.iloc[0]["last"])
+        assert pd.isna(df.iloc[0]["change"])
+        assert pd.isna(df.iloc[0]["ratio"])
+
+    def test_heatmap_null_result_yields_empty_quotes(self):
+        api = SectorAPI(_FakeTransport(lambda url: {"Result": None}), MemoryCache())
+        df = api.us_sector_quotes()
+        assert df.empty
+        assert list(df.columns) == [
+            "name", "last", "change", "ratio", "volume", "amount", "market_value",
+        ]
+
+    def test_list_us_sectors_missing_ratio_is_nan(self):
+        api = SectorAPI(_FakeTransport(lambda url: {"Result": {"list": {"body": [
+            {"name": "半导体", "code": "US1305", "market": "us"},
+        ]}}}), MemoryCache())
+        df = api.list_us_sectors()
+        assert len(df) == 1
+        assert pd.isna(df.iloc[0]["ratio"])
+
+    def test_list_industries_null_result_empty(self):
+        api = SectorAPI(_FakeTransport(lambda url: {"Result": None}), MemoryCache())
+        df = api.list_industries()
+        assert df.empty
+        assert list(df.columns) == ["name", "ratio"]
+
+    def test_list_industries_missing_ratio_is_nan(self):
+        api = SectorAPI(_FakeTransport(lambda url: {"Result": {"blocks": [
+            {"name": "白酒", "code": "BK0475", "market": "ab"},
+        ]}}), MemoryCache())
+        df = api.list_industries()
+        assert df.iloc[0]["name"] == "白酒"
+        assert pd.isna(df.iloc[0]["ratio"])
+
+    def test_sapi_null_list_yields_empty_constituents(self):
+        def handler(url):
+            if "style=heatmap" in url:
+                return {"Result": {"list": {"body": [
+                    {"name": "半导体", "code": "US1305", "market": "us"},
+                ]}}}
+            return {"Result": {"list": None}}
+
+        api = SectorAPI(_FakeTransport(handler), MemoryCache())
+        df = api.us_sector_constituents("半导体")
+        assert df.empty
+        assert list(df.columns) == ["code", "name", "market_value"]
+
+    def test_ab_constituents_malformed_empty(self):
+        def handler(url):
+            if "opendata" in url:
+                return {"Result": None}
+            return {"Result": {"blocks": [
+                {"name": "白酒", "code": "BK0475", "market": "ab",
+                 "ratio": {"value": "1%"}},
+            ]}}
+
+        api = SectorAPI(_FakeTransport(handler), MemoryCache())
+        df = api.industry_constituents("白酒")
+        assert df.empty
+        assert list(df.columns) == ["code", "name"]
+
+    def test_hk_stock_connect_null_list(self):
+        api = SectorAPI(_FakeTransport(lambda url: {"Result": {"list": None}}), MemoryCache())
+        df = api.hk_stock_connect()
+        assert df.empty
+        assert list(df.columns) == ["code", "name", "sector_code", "sector_name"]
 
 
 @live
@@ -204,3 +339,21 @@ class TestUnitedStates:
         assert df["market_value"].notna().any()
         sectors = client.list_us_sectors()
         assert set(df["sector"]).issubset(set(sectors["name"]))
+
+    def test_quotes(self, client):
+        df = client.us_sector_quotes()
+        assert list(df.columns) == [
+            "name", "last", "change", "ratio", "volume", "amount", "market_value",
+        ]
+        assert len(df) > 0
+        assert df["last"].notna().any()
+
+    def test_quote(self, client):
+        name = client.list_us_sectors().iloc[0]["name"]
+        df = client.us_sector_quote(name)
+        assert list(df.columns) == [
+            "name", "last", "change", "ratio", "volume", "amount", "market_value",
+        ]
+        assert len(df) == 1
+        assert df.iloc[0]["name"] == name
+        assert pd.notna(df.iloc[0]["last"])

@@ -79,6 +79,7 @@ class StockAPI:
             f"&finClientType=pc&finClientType=pc"
         )
         res = self._transport.get_json(_QUOTATION_PREFIX + suffix)
+        result = res.get("Result") if isinstance(res, dict) else None
         return parse_market_data(
-            res.get("Result"), code=code, name=info.name, start=start
+            result, code=code, name=info.name, start=start
         )

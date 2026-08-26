@@ -25,6 +25,11 @@ class TestParsingPure:
         assert parse_market_data(None).empty
         assert parse_market_data({}).empty
 
+    def test_null_new_market_data_returns_empty(self):
+        assert parse_market_data({"newMarketData": None}).empty
+        assert parse_market_data({"newMarketData": {"marketData": None}}).empty
+        assert parse_market_data([]).empty
+
 
 class TestRequestsTransportSessions:
     def test_lazy_until_first_use(self):

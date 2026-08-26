@@ -39,6 +39,8 @@ kline = client.industry_kline("白酒", Period.DAILY, start, end)
 us = client.list_us_sectors()                       # [name, ratio]
 us_members = client.us_sector_constituents("半导体")  # [code, name, market_value]
 us_all = client.us_all_constituents()               # [code, name, sector, market_value]
+quotes = client.us_sector_quotes()                  # [name, last, change, ratio, volume, amount, market_value]
+quote = client.us_sector_quote("半导体")              # one row, same columns as quotes
 
 client.close()
 ```

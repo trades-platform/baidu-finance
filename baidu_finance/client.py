@@ -120,6 +120,14 @@ class Client:
         """OHLCV K-line for a US sector, by name."""
         return self._sector.us_sector_kline(name, period, start, end)
 
+    def us_sector_quotes(self) -> pd.DataFrame:
+        """Latest US sector quotes as ``[name, last, change, ratio, volume, amount, market_value]``."""
+        return self._sector.us_sector_quotes()
+
+    def us_sector_quote(self, name: str) -> pd.DataFrame:
+        """One US sector quote; same columns as :meth:`us_sector_quotes`."""
+        return self._sector.us_sector_quote(name)
+
     def us_all_constituents(self) -> pd.DataFrame:
         """All US sector members as ``[code, name, sector, market_value]``."""
         return self._sector.us_all_constituents()

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from baidu_finance import Adjust, Period, StockInfo
+from baidu_finance import Adjust, Period, SectorNotFoundError, StockInfo
 from baidu_finance.cache import MemoryCache
 
 
@@ -56,6 +56,14 @@ class TestStockInfo:
         assert info.code == "600519"
         assert info.name == "贵州茅台"
         assert info.market_id == "ab"
+
+
+class TestSectorNotFoundError:
+    def test_exported_from_package_root(self):
+        from baidu_finance.sector import SectorNotFoundError as Inner
+
+        assert SectorNotFoundError is Inner
+        assert issubclass(SectorNotFoundError, LookupError)
 
 
 class TestMemoryCache:

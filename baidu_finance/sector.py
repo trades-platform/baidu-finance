@@ -21,6 +21,7 @@ from .models import (
     SECTOR_COLUMNS,
     US_CONSTITUENT_COLUMNS,
     US_MEMBER_COLUMNS,
+    US_QUOTE_COLUMNS,
 )
 from .parsing import parse_market_data
 from .transport import Transport
@@ -64,22 +65,51 @@ class SectorNotFoundError(LookupError):
     """Raised when a sector name cannot be resolved even after a refresh."""
 
 
-def _to_float(value: str) -> float:
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _result_dict(payload: object) -> dict:
+    return _as_dict(_as_dict(payload).get("Result"))
+
+
+def _list_body(payload: object) -> list:
+    """``Result.list.body``, or ``Result.list`` when it is already a sequence."""
+    listing = _result_dict(payload).get("list")
+    if isinstance(listing, dict):
+        return _as_list(listing.get("body"))
+    return _as_list(listing)
+
+
+def _walk(obj: object, *path: object):
+    cur = obj
+    for key in path:
+        if isinstance(key, int):
+            if not isinstance(cur, list) or key >= len(cur) or key < -len(cur):
+                return None
+            cur = cur[key]
+            continue
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _num(value: object) -> float:
+    if value is None or value == "":
+        return float("nan")
     try:
-        return float(str(value).replace("%", "").replace("+", ""))
-    except (ValueError, TypeError):
-        return 0.0
+        return float(str(value).replace("%", "").replace("+", "").replace(",", ""))
+    except (TypeError, ValueError):
+        return float("nan")
 
 
-def _market_value(item: dict) -> float:
-    """Numeric market cap from ``rawData.marketValue`` (USD for US names)."""
-    raw = item.get("rawData")
-    if isinstance(raw, dict) and raw.get("marketValue") is not None:
-        try:
-            return float(raw["marketValue"])
-        except (TypeError, ValueError):
-            pass
-    return float("nan")
+def _raw_num(item: dict, key: str) -> float:
+    return _num(_as_dict(item.get("rawData")).get(key))
 
 
 class SectorAPI:
@@ -106,41 +136,78 @@ class SectorAPI:
         """List US sectors as ``[name, ratio]`` and populate the cache."""
         return self._list_heatmap_blocks("us", "HY", 500, _US_SECTOR_TAG)
 
+    def us_sector_quotes(self) -> pd.DataFrame:
+        """Latest US sector quotes as ``[name, last, change, ratio, volume, amount, market_value]``."""
+        rows = []
+        for block in self._iter_heatmap_blocks("us", "HY", 500, _US_SECTOR_TAG):
+            rows.append([
+                block.get("name", ""),
+                _raw_num(block, "lastPx"),
+                _raw_num(block, "pxChange"),
+                _raw_num(block, "pxChangeRate"),
+                _raw_num(block, "volume"),
+                _raw_num(block, "amount"),
+                _raw_num(block, "marketValue"),
+            ])
+        return pd.DataFrame(rows, columns=US_QUOTE_COLUMNS)
+
+    def us_sector_quote(self, name: str) -> pd.DataFrame:
+        """Latest quote for one US sector, same columns as ``us_sector_quotes``.
+
+        Uses the heatmap list (one request) and returns the matching row.
+        Unknown names raise :class:`SectorNotFoundError`. Open/high/low and
+        other OHLC fields are on :meth:`us_sector_kline`, not this snapshot.
+        """
+        df = self.us_sector_quotes()
+        hit = df.loc[df["name"].eq(name)].reset_index(drop=True)
+        if hit.empty:
+            raise SectorNotFoundError(f"Sector not found: {name!r}")
+        return hit
+
     def _list_heatmap_blocks(
         self, market: str, type_code: str, rn: int, tag: str
     ) -> pd.DataFrame:
+        rows = []
+        for block in self._iter_heatmap_blocks(market, type_code, rn, tag):
+            rows.append([block.get("name", ""), _num(block.get("pxChangeRate"))])
+        return pd.DataFrame(rows, columns=SECTOR_COLUMNS)
+
+    def _iter_heatmap_blocks(self, market: str, type_code: str, rn: int, tag: str):
         data = self._transport.get_json(
             _HEATMAP_BLOCKS_URL.format(market=market, type_code=type_code, rn=rn)
         )
-        body = data.get("Result", {}).get("list", {}).get("body", [])
-        rows = []
-        for block in body:
+        for block in _list_body(data):
+            if not isinstance(block, dict):
+                continue
             name = block.get("name", "")
             if not name:
                 continue
-            real_code = block.get("code", "")
-            block_market = block.get("market", market)
-            ratio = _to_float(block.get("pxChangeRate", "0%"))
             self._cache.set(
-                name, {"real_code": real_code, "market": block_market},
-                tag=tag, expire=_BLOCK_EXPIRE,
+                name,
+                {"real_code": block.get("code", ""), "market": block.get("market", market)},
+                tag=tag,
+                expire=_BLOCK_EXPIRE,
             )
-            rows.append([name, ratio])
-        return pd.DataFrame(rows, columns=SECTOR_COLUMNS)
+            yield block
 
     def _list_ab_blocks(self, type_code: str, rn: int, tag: str) -> pd.DataFrame:
         data = self._transport.get_json(_BLOCKS_URL.format(rn=rn, type_code=type_code))
         rows = []
-        for block in data["Result"]["blocks"]:
-            name = block["name"]
-            real_code = block["code"]
-            market = block["market"]
-            ratio = _to_float(block["ratio"]["value"])
+        for block in _as_list(_result_dict(data).get("blocks")):
+            if not isinstance(block, dict):
+                continue
+            name = block.get("name") or ""
+            if not name:
+                continue
+            ratio_obj = block.get("ratio")
+            ratio_val = ratio_obj.get("value") if isinstance(ratio_obj, dict) else ratio_obj
             self._cache.set(
-                name, {"real_code": real_code, "market": market},
-                tag=tag, expire=_BLOCK_EXPIRE,
+                name,
+                {"real_code": block.get("code", ""), "market": block.get("market", "")},
+                tag=tag,
+                expire=_BLOCK_EXPIRE,
             )
-            rows.append([name, ratio])
+            rows.append([name, _num(ratio_val)])
         return pd.DataFrame(rows, columns=SECTOR_COLUMNS)
 
     # ── resolution ───────────────────────────────────────────────────────
@@ -174,7 +241,7 @@ class SectorAPI:
         """Return ``[code, name, market_value]`` member stocks of a US sector."""
         info = self._resolve(name, _US_SECTOR_TAG, self.list_us_sectors)
         rows = [
-            [x.get("code", ""), x.get("name", ""), _market_value(x)]
+            [x.get("code", ""), x.get("name", ""), _raw_num(x, "marketValue")]
             for x in self._iter_sapi_members(info["real_code"], info["market"])
         ]
         return pd.DataFrame(rows, columns=US_CONSTITUENT_COLUMNS)
@@ -199,7 +266,7 @@ class SectorAPI:
         def _one(job: tuple[str, str, str]) -> pd.DataFrame:
             name, code, market = job
             rows = [
-                [x.get("code", ""), x.get("name", ""), name, _market_value(x)]
+                [x.get("code", ""), x.get("name", ""), name, _raw_num(x, "marketValue")]
                 for x in self._iter_sapi_members(code, market)
             ]
             if not rows:
@@ -216,10 +283,14 @@ class SectorAPI:
 
     def _ab_constituents(self, code: str, market: str) -> pd.DataFrame:
         res = self._transport.get_json(_A_CONSTITUENT_URL.format(code=code, market=market))
-        data = (
-            res["Result"][0]["DisplayData"]["resultData"]["tplData"]["result"]["list"]
+        listing = _walk(
+            res, "Result", 0, "DisplayData", "resultData", "tplData", "result", "list"
         )
-        rows = [[x["code"], x["name"]] for x in data]
+        rows = []
+        for item in _as_list(listing):
+            if not isinstance(item, dict) or not item.get("code"):
+                continue
+            rows.append([item.get("code", ""), item.get("name", "")])
         return pd.DataFrame(rows, columns=CONSTITUENT_COLUMNS)
 
     def _sapi_constituents(self, code: str, market: str) -> pd.DataFrame:
@@ -239,10 +310,9 @@ class SectorAPI:
                     code=code, market=market, pn=offset, rn=_SAPI_PAGE
                 )
             )
-            result = res.get("Result", {})
-            body = result.get("list", {}).get("body", []) if isinstance(result, dict) else []
+            body = _list_body(res)
             for item in body:
-                if item.get("code"):
+                if isinstance(item, dict) and item.get("code"):
                     yield item
             if len(body) < _SAPI_PAGE:
                 return
@@ -293,7 +363,8 @@ class SectorAPI:
             code=code, market=market, ktype=period.baidu_ktype, beg=beg, end=end_q
         )
         res = self._transport.get_json(url)
-        return parse_market_data(res.get("Result"), code=code, name=name, start=start)
+        result = res.get("Result") if isinstance(res, dict) else None
+        return parse_market_data(result, code=code, name=name, start=start)
 
     # ── stock connect ────────────────────────────────────────────────────
     def hk_stock_connect(
@@ -308,14 +379,13 @@ class SectorAPI:
                 code=connect_type, market="hk", pn=page, rn=page_size
             )
         )
-        result = res.get("Result", {})
-        body = result.get("list", {}).get("body", []) if isinstance(result, dict) else []
+        body = _list_body(res)
         rows = []
-        for x in body:
-            if not x.get("code"):
+        for item in body:
+            if not isinstance(item, dict) or not item.get("code"):
                 continue
-            block = x.get("block", {})
+            block = item.get("block")
             sector_code = block.get("code", "") if isinstance(block, dict) else ""
             sector_name = block.get("name", "") if isinstance(block, dict) else ""
-            rows.append([x.get("code", ""), x.get("name", ""), sector_code, sector_name])
+            rows.append([item.get("code", ""), item.get("name", ""), sector_code, sector_name])
         return pd.DataFrame(rows, columns=CONNECT_COLUMNS)

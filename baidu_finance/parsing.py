@@ -41,11 +41,14 @@ def parse_market_data(
         DataFrame indexed by ``DatetimeIndex`` with columns
         ``open, high, low, close, volume``.
     """
-    if not result:
+    if not isinstance(result, dict):
         return empty_kline()
 
-    market_data = result.get("newMarketData", {}).get("marketData", "")
-    if not market_data:
+    market = result.get("newMarketData")
+    if not isinstance(market, dict):
+        return empty_kline()
+    market_data = market.get("marketData")
+    if not isinstance(market_data, str) or not market_data:
         return empty_kline()
 
     rows = [item.split(",")[1:7] for item in market_data.split(";") if item]
