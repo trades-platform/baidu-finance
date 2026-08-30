@@ -77,18 +77,40 @@ from baidu_finance.cache import DiskCache      # requires baidu-finance[disk]
 client = Client(cache=DiskCache("~/.baidu_finance_cache"))
 ```
 
-### Rate limiting
+### Rate limiting & risk control
 
-Baidu's risk control randomly drops ~1/10 of rapid requests (TLS-level
-resets) and blocks sustained hammering. `RequestsTransport` meters requests
-with an **adaptive token bucket**: up to `burst` (10) requests may fire
-back-to-back — isolated calls and short parallel fan-outs never wait —
-while sustained pulls are capped at `rate` (10/s). Whenever the primary
-request fails, the refill rate halves (floor 0.5/s) and recovers as
-successes return, so throughput only degrades while Baidu actually pushes
-back. All requests carry full browser headers; connection errors and
-429/5xx are retried with backoff, and the wget fallback carries the same
-headers.
+Baidu's risk control has four observable states, and the transport answers
+each one:
+
+| State | Looks like | Transport behavior |
+|---|---|---|
+| Normal | 200 + data | Returns the payload |
+| Random reset | TLS handshake drop (~1/10 of rapid requests) | Retried in-session; treated as noise — the rate is *not* halved for isolated failures |
+| Soft block | 200 + emptied envelope (`Result` null / `data` key missing) | Retried briefly, then `TransportError` — never handed to wget; counts toward the breaker |
+| Hard block | 403 + `{"msg": "hit risk", "isCaptchaEnabled": true}` | `TransportError` immediately; the endpoint's circuit opens at once |
+
+`RequestsTransport` meters requests with an **adaptive token bucket**: up
+to `burst` (10) requests may fire back-to-back — isolated calls and short
+parallel fan-outs never wait — while sustained pulls are capped at `rate`
+(10/s) with bounded random jitter (never metronome-exact). The refill
+rate halves (floor 0.5/s) only on a **sustained** failure confirmed by the
+per-endpoint circuit breaker, recovering as successes return.
+
+Each endpoint (host + path) carries its own **circuit breaker**: after 3
+consecutive failures across distinct URLs it opens, and calls during the
+cooldown fail fast with `TransportError` and **zero network traffic**.
+Blocks decay on a minutes scale per endpoint, so the cooldown starts at
+60s, doubles on failed half-open probes, and caps at 600s; a successful
+probe closes the breaker. The same URL failing repeatedly (e.g. an
+unknown stock code, which also returns `Result: null`) does **not** trip
+the breaker — only cross-URL streaks do. All requests carry full browser
+headers; connection errors and 429/5xx are retried with backoff, and the
+wget fallback (same headers) covers network-layer and non-risk HTTP
+failures only.
+
+Note: with this change an unknown/invalid stock code now surfaces as
+`TransportError` ("suspected block or invalid code") instead of a
+`TypeError` deep in parsing.
 
 ```python
 from baidu_finance import Client
@@ -96,6 +118,9 @@ from baidu_finance.transport import RequestsTransport
 
 client = Client(transport=RequestsTransport(rate=5, burst=5))  # gentler
 client = Client(transport=RequestsTransport(rate=0))           # unmetered
+# Breaker tuning (defaults shown):
+client = Client(transport=RequestsTransport(
+    circuit_threshold=3, cooldown=60.0, max_cooldown=600.0, suspect_retries=2))
 ```
 
 ## Tests
