@@ -15,3 +15,7 @@ htmlcov/
 # OpenSpec (local spec-driven workflow, not published)
 openspec/
 .github/
+
+# Agent workspace dirs
+.claude/
+.zcode/
