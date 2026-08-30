@@ -13,6 +13,7 @@ pip install baidu-finance[disk]      # + persistent diskcache-rs cache
 ## Public-handle contract
 
 - **Stocks** are addressed by their standard public code: `600519`, `00700`.
+- **Indices** are addressed by their public index code: `000300`, `899050`.
 - **Industries / concepts / HK / US sectors** are addressed by their public **name**:
   `白酒`, `人工智能`, `恒生科技`, `半导体`.
 
@@ -42,8 +43,30 @@ us_all = client.us_all_constituents()               # [code, name, sector, marke
 quotes = client.us_sector_quotes()                  # [name, last, change, ratio, volume, amount, market_value]
 quote = client.us_sector_quote("半导体")              # one row, same columns as quotes
 
+# indices (by code)
+idx_kline = client.index_kline("000300", Period.DAILY, start, end)
+idx_members = client.index_constituents("000852")    # [code, name]
+
 client.close()
 ```
+
+### Index coverage and the silent-fallback guard
+
+Baidu's index library is incomplete, and for a bare 6-digit code with no index
+data its quotation backend **silently returns the colliding Shenzhen stock**
+(`000985` 中证全指 yields 大庆华科's ¥16 price history; `isIndex=true` does not
+help). Since the fallback is undetectable in the payload, every index call
+first verifies the code against Baidu's *index constituents* library — real
+indices always have members — and raises `IndexNotFoundError` otherwise.
+Verification is cached for 7 days. Unknown-to-Baidu indices such as `932000`
+(中证2000) raise the same error.
+
+Validated indices (constituent counts match the official ones):
+`000300` 沪深300, `000852` 中证1000, `000905` 中证500, `000680` 科创综指,
+`000688` 科创50, `399006` 创业板指, `399673` 创业板50, `899050` 北证50.
+Other codes Baidu carries also work; `INDEX_NAMES` provides display names for
+the validated set. Daily K-lines reach back to mid-2018 (~2001 bars); minute
+periods are unsupported by the endpoint.
 
 ### Persistent cache
 

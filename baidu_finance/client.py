@@ -9,6 +9,7 @@ import pandas as pd
 
 from .cache import Cache, MemoryCache
 from .enums import Adjust, Period
+from .index import IndexAPI
 from .models import StockInfo
 from .sector import SectorAPI
 from .stock import StockAPI
@@ -18,9 +19,9 @@ from .transport import RequestsTransport, Transport
 class Client:
     """Baidu market-data client.
 
-    Stocks are addressed by public code; industries, concepts, HK sectors,
-    and US sectors are addressed by public name. Baidu internal ids never
-    appear in returns.
+    Stocks and indices are addressed by public code; industries, concepts,
+    HK sectors, and US sectors are addressed by public name. Baidu internal
+    ids never appear in returns.
 
     Args:
         transport: Transport implementation. Defaults to :class:`RequestsTransport`.
@@ -37,6 +38,7 @@ class Client:
         self._cache = cache if cache is not None else MemoryCache()
         self._stock = StockAPI(self._transport, self._cache)
         self._sector = SectorAPI(self._transport, self._cache)
+        self._index = IndexAPI(self._transport, self._cache)
 
     # ── stock ────────────────────────────────────────────────────────────
     def get_info(self, code: str) -> StockInfo:
@@ -131,6 +133,21 @@ class Client:
     def us_all_constituents(self) -> pd.DataFrame:
         """All US sector members as ``[code, name, sector, market_value]``."""
         return self._sector.us_all_constituents()
+
+    # ── indices ──────────────────────────────────────────────────────────
+    def index_kline(
+        self, code: str, period: Union[Period, str], start: datetime, end: datetime
+    ) -> pd.DataFrame:
+        """OHLCV K-line for a market index, by code.
+
+        Unknown indices raise :class:`IndexNotFoundError` rather than
+        silently returning the colliding stock's data.
+        """
+        return self._index.get_kline(code, period, start, end)
+
+    def index_constituents(self, code: str) -> pd.DataFrame:
+        """Member stocks of an index as ``[code, name]``."""
+        return self._index.get_constituents(code)
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def close(self) -> None:
