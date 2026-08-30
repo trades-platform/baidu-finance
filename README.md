@@ -77,6 +77,27 @@ from baidu_finance.cache import DiskCache      # requires baidu-finance[disk]
 client = Client(cache=DiskCache("~/.baidu_finance_cache"))
 ```
 
+### Rate limiting
+
+Baidu's risk control randomly drops ~1/10 of rapid requests (TLS-level
+resets) and blocks sustained hammering. `RequestsTransport` meters requests
+with an **adaptive token bucket**: up to `burst` (10) requests may fire
+back-to-back — isolated calls and short parallel fan-outs never wait —
+while sustained pulls are capped at `rate` (10/s). Whenever the primary
+request fails, the refill rate halves (floor 0.5/s) and recovers as
+successes return, so throughput only degrades while Baidu actually pushes
+back. All requests carry full browser headers; connection errors and
+429/5xx are retried with backoff, and the wget fallback carries the same
+headers.
+
+```python
+from baidu_finance import Client
+from baidu_finance.transport import RequestsTransport
+
+client = Client(transport=RequestsTransport(rate=5, burst=5))  # gentler
+client = Client(transport=RequestsTransport(rate=0))           # unmetered
+```
+
 ## Tests
 
 Tests run against **live** Baidu endpoints (no mocks) and are skip-gated:
